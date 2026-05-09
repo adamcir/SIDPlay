@@ -35,6 +35,7 @@
 *.i*86
 *.x86_64
 *.hex
+*.prg
 
 # Debug files
 *.dSYM/
@@ -51,5 +52,11 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
+# Debug information files
 *.dwo
+
+# Sid files
+*.sid
+
+# C64 files
+*.d64
