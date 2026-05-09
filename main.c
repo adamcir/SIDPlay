@@ -17,16 +17,29 @@
 #define PLAYMODE_REJECT_CIA 3
 
 #define KEY_RETURN 13
-#define KEY_SPACE 32
 #define KEY_UP 145
 #define KEY_DOWN 17
+#define KEY_LEFT 157
+#define KEY_RIGHT 29
 #define KEY_DEL 20
-
-/* -------------------------------------------------- */
-/* Global variables */
 
 char sid_files[MAX_FILES][MAX_NAME];
 uint8_t sid_count = 0;
+
+uint8_t song_play_mode[MAX_FILES];
+uint16_t song_vbi_hz[MAX_FILES];
+uint16_t song_cia_hz[MAX_FILES];
+uint8_t song_unsafe_low_load[MAX_FILES];
+
+uint8_t default_play_mode = PLAYMODE_AUTO;
+uint16_t default_vbi_hz = 50;
+uint16_t default_cia_hz = 50;
+uint8_t default_unsafe_low_load = 0;
+
+uint8_t play_mode = PLAYMODE_AUTO;
+uint8_t unsafe_low_load = 0;
+uint16_t custom_vbi_hz = 50;
+uint16_t custom_cia_hz = 50;
 
 uint16_t sid_init;
 uint16_t sid_play;
@@ -40,23 +53,115 @@ uint32_t sid_speed_flags;
 uint8_t sid_use_cia;
 uint8_t sid_is_rsid_file;
 
-uint8_t play_mode = PLAYMODE_AUTO;
-uint8_t unsafe_low_load = 0;
-
-uint16_t custom_vbi_hz = 50;
-uint16_t custom_cia_hz = 50;
+char sid_title[33];
+char sid_author[33];
 
 uint16_t current_call;
 uint8_t current_song;
-
-/* -------------------------------------------------- */
-/* ASM functions */
 
 extern void sid_call_init(void);
 extern void sid_call_play(void);
 extern void sid_prepare_song(void);
 
-/* -------------------------------------------------- */
+void setup_screen(void)
+{
+    bordercolor(COLOR_BLACK);
+    bgcolor(COLOR_BLACK);
+    textcolor(COLOR_WHITE);
+    clrscr();
+}
+
+void print_sidplay_logo(char *info)
+{
+    textcolor(COLOR_LIGHTGREEN);
+    cprintf("SID");
+
+    textcolor(COLOR_ORANGE);
+    cprintf("Play");
+
+    textcolor(COLOR_WHITE);
+
+    if (info != 0 && info[0] != 0)
+        cprintf(" %s\r\n", info);
+    else
+        cprintf("\r\n");
+
+    cprintf("----------------------------------------\r\n");
+}
+
+void print_help(void)
+{
+    cprintf("\r\n");
+    cprintf("UP/DOWN move\r\n");
+    cprintf("RET/RIGHT enter\r\n");
+    cprintf("Q/LEFT back\r\n");
+}
+
+void print_main_help(void)
+{
+    cprintf("\r\n");
+    cprintf("UP/DOWN move\r\n");
+    cprintf("RET/RIGHT enter\r\n");
+    cprintf("Q exit program\r\n");
+}
+
+void print_cursor_line(uint8_t selected, char *text)
+{
+    if (selected)
+    {
+        textcolor(COLOR_YELLOW);
+        cprintf("> %s\r\n", text);
+        textcolor(COLOR_WHITE);
+    }
+    else
+    {
+        cprintf("  %s\r\n", text);
+    }
+}
+
+uint8_t menu_key(void)
+{
+    uint8_t key;
+
+    key = cgetc();
+
+    if (key == 'w' || key == 'W')
+        return KEY_UP;
+
+    if (key == 's' || key == 'S')
+        return KEY_DOWN;
+
+    if (key == 'a' || key == 'A')
+        return KEY_LEFT;
+
+    if (key == 'd' || key == 'D')
+        return KEY_RIGHT;
+
+    return key;
+}
+
+uint8_t is_back_key(uint8_t key)
+{
+    return key == 'q' || key == 'Q' || key == KEY_LEFT;
+}
+
+uint8_t is_program_exit_key(uint8_t key)
+{
+    return key == 'q' || key == 'Q';
+}
+
+void wait_for_back(void)
+{
+    uint8_t key;
+
+    while (1)
+    {
+        key = menu_key();
+
+        if (is_back_key(key))
+            return;
+    }
+}
 
 uint16_t be16(uint8_t *p)
 {
@@ -67,8 +172,6 @@ uint16_t le16(uint8_t *p)
 {
     return p[0] | ((uint16_t)p[1] << 8);
 }
-
-/* -------------------------------------------------- */
 
 uint8_t is_psid(void)
 {
@@ -86,8 +189,6 @@ uint8_t is_rsid(void)
            SID_BUFFER[3] == 0x44;
 }
 
-/* -------------------------------------------------- */
-
 uint8_t ends_with_sid(char *name)
 {
     uint8_t len = strlen(name);
@@ -101,23 +202,54 @@ uint8_t ends_with_sid(char *name)
             (name[len - 1] == 'd' || name[len - 1] == 'D'));
 }
 
-/* -------------------------------------------------- */
-
-char *get_play_mode_name(void)
+void copy_sid_text(uint16_t offset, char *dest)
 {
-    if (play_mode == PLAYMODE_AUTO)
+    uint8_t i;
+    uint8_t c;
+
+    for (i = 0; i < 32; i++)
+    {
+        c = SID_BUFFER[offset + i];
+
+        if (c == 0)
+            break;
+
+        dest[i] = c;
+    }
+
+    dest[i] = 0;
+}
+
+char *get_play_mode_name_by_value(uint8_t mode)
+{
+    if (mode == PLAYMODE_AUTO)
         return "AUTO";
-    else if (play_mode == PLAYMODE_VBI_CUSTOM)
+    else if (mode == PLAYMODE_VBI_CUSTOM)
         return "VBI CUSTOM HZ";
-    else if (play_mode == PLAYMODE_CIA_CUSTOM)
+    else if (mode == PLAYMODE_CIA_CUSTOM)
         return "CIA CUSTOM HZ";
-    else if (play_mode == PLAYMODE_REJECT_CIA)
+    else if (mode == PLAYMODE_REJECT_CIA)
         return "REJECT CIA";
 
     return "UNKNOWN";
 }
 
-/* -------------------------------------------------- */
+char *get_play_mode_name(void)
+{
+    return get_play_mode_name_by_value(play_mode);
+}
+
+uint8_t next_play_mode(uint8_t mode)
+{
+    if (mode == PLAYMODE_AUTO)
+        return PLAYMODE_VBI_CUSTOM;
+    else if (mode == PLAYMODE_VBI_CUSTOM)
+        return PLAYMODE_CIA_CUSTOM;
+    else if (mode == PLAYMODE_CIA_CUSTOM)
+        return PLAYMODE_REJECT_CIA;
+
+    return PLAYMODE_AUTO;
+}
 
 uint16_t get_effective_hz(void)
 {
@@ -138,7 +270,39 @@ uint16_t get_effective_hz(void)
     return custom_vbi_hz;
 }
 
-/* -------------------------------------------------- */
+void apply_song_settings(uint8_t index)
+{
+    play_mode = song_play_mode[index];
+    custom_vbi_hz = song_vbi_hz[index];
+    custom_cia_hz = song_cia_hz[index];
+    unsafe_low_load = song_unsafe_low_load[index];
+}
+
+void init_song_settings(void)
+{
+    uint8_t i;
+
+    for (i = 0; i < MAX_FILES; i++)
+    {
+        song_play_mode[i] = default_play_mode;
+        song_vbi_hz[i] = default_vbi_hz;
+        song_cia_hz[i] = default_cia_hz;
+        song_unsafe_low_load[i] = default_unsafe_low_load;
+    }
+}
+
+void apply_defaults_to_all_songs(void)
+{
+    uint8_t i;
+
+    for (i = 0; i < sid_count; i++)
+    {
+        song_play_mode[i] = default_play_mode;
+        song_vbi_hz[i] = default_vbi_hz;
+        song_cia_hz[i] = default_cia_hz;
+        song_unsafe_low_load[i] = default_unsafe_low_load;
+    }
+}
 
 void call_init(uint16_t addr, uint8_t song)
 {
@@ -153,8 +317,6 @@ void call_play(uint16_t addr)
     sid_call_play();
 }
 
-/* -------------------------------------------------- */
-
 void wait_frame(void)
 {
     while (VIC.rasterline == 0)
@@ -164,45 +326,45 @@ void wait_frame(void)
         ;
 }
 
-/* -------------------------------------------------- */
-
 void sid_silence(void)
 {
     uint8_t i;
     uint8_t *sid = (uint8_t *)0xd400;
 
-    for (i = 0; i < 25; i++)
+    sid[4] = 0;
+    sid[11] = 0;
+    sid[18] = 0;
+
+    for (i = 0; i < 29; i++)
         sid[i] = 0;
 }
 
-/* -------------------------------------------------- */
-
-uint8_t menu_key(void)
+void show_authors(void)
 {
-    uint8_t key;
+    setup_screen();
 
-    key = cgetc();
+    print_sidplay_logo("authors");
 
-    if (key == 'w' || key == 'W')
-        return KEY_UP;
+    cprintf("Program:\r\n");
+    cprintf("Adam (Adava) Cir / adamcir\r\n\r\n");
 
-    if (key == 's' || key == 'S')
-        return KEY_DOWN;
+    cprintf("Year:\r\n");
+    cprintf("2026\r\n\r\n");
 
-    return key;
+    cprintf("Project:\r\n");
+    cprintf("SIDPlay for Commodore 64\r\n\r\n");
+
+    cprintf("Supported format:\r\n");
+    cprintf("Simple PSID init/play tunes\r\n\r\n");
+
+    cprintf("Limitations:\r\n");
+    cprintf("No full RSID support\r\n");
+    cprintf("No Play $0000 IRQ tunes\r\n");
+    cprintf("No perfect CIA timer yet\r\n\r\n");
+
+    cprintf("Q/LEFT = back\r\n");
+    wait_for_back();
 }
-
-/* -------------------------------------------------- */
-
-void print_cursor_line(uint8_t selected, char *text)
-{
-    if (selected)
-        cprintf("> %s\r\n", text);
-    else
-        cprintf("  %s\r\n", text);
-}
-
-/* -------------------------------------------------- */
 
 uint16_t input_hz(char *title, uint16_t old_value)
 {
@@ -211,10 +373,10 @@ uint16_t input_hz(char *title, uint16_t old_value)
     uint8_t key;
     uint8_t done = 0;
 
-    clrscr();
+    setup_screen();
 
-    cprintf("%s\r\n", title);
-    cprintf("--------------------\r\n\r\n");
+    print_sidplay_logo(title);
+
     cprintf("Old value: %u Hz\r\n", old_value);
     cprintf("Enter new value.\r\n");
     cprintf("Range: 1-300 Hz\r\n\r\n");
@@ -222,7 +384,7 @@ uint16_t input_hz(char *title, uint16_t old_value)
 
     while (!done)
     {
-        key = cgetc();
+        key = menu_key();
 
         if (key >= '0' && key <= '9')
         {
@@ -235,22 +397,18 @@ uint16_t input_hz(char *title, uint16_t old_value)
         }
         else if (key == KEY_DEL)
         {
-            /*
-               Jednoduchý backspace.
-               Pokud by v emulátoru nefungoval, stačí zadat hodnotu znovu.
-            */
             if (digits > 0)
             {
                 value = value / 10;
                 digits--;
-                cputc(20);
+                cputc(50);
             }
         }
-        else if (key == KEY_RETURN)
+        else if (key == KEY_RETURN || key == KEY_RIGHT)
         {
             done = 1;
         }
-        else if (key == 'q' || key == 'Q')
+        else if (is_back_key(key))
         {
             return old_value;
         }
@@ -268,9 +426,7 @@ uint16_t input_hz(char *title, uint16_t old_value)
     return value;
 }
 
-/* -------------------------------------------------- */
-
-void show_options_menu(void)
+void show_global_settings_menu(void)
 {
     uint8_t selected = 0;
     uint8_t done = 0;
@@ -278,46 +434,69 @@ void show_options_menu(void)
 
     while (!done)
     {
-        clrscr();
+        setup_screen();
 
-        cprintf("SIDPlay options\r\n");
-        cprintf("--------------------\r\n\r\n");
+        print_sidplay_logo("settings");
 
         if (selected == 0)
-            cprintf("> VBI CUSTOM: %u HZ\r\n", custom_vbi_hz);
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> DEFAULT MODE: %s\r\n",
+                    get_play_mode_name_by_value(default_play_mode));
+            textcolor(COLOR_WHITE);
+        }
         else
-            cprintf("  VBI CUSTOM: %u HZ\r\n", custom_vbi_hz);
+        {
+            cprintf("  DEFAULT MODE: %s\r\n",
+                    get_play_mode_name_by_value(default_play_mode));
+        }
 
         if (selected == 1)
-            cprintf("> CIA CUSTOM: %u HZ\r\n", custom_cia_hz);
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> DEFAULT VBI HZ: %u\r\n", default_vbi_hz);
+            textcolor(COLOR_WHITE);
+        }
         else
-            cprintf("  CIA CUSTOM: %u HZ\r\n", custom_cia_hz);
+        {
+            cprintf("  DEFAULT VBI HZ: %u\r\n", default_vbi_hz);
+        }
 
-        print_cursor_line(selected == 2, "AUTO FROM HEADER");
-        print_cursor_line(selected == 3, "REJECT CIA SONGS");
-
-        if (selected == 4)
-            cprintf("> UNSAFE LOW LOAD: %s\r\n", unsafe_low_load ? "ON" : "OFF");
+        if (selected == 2)
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> DEFAULT CIA HZ: %u\r\n", default_cia_hz);
+            textcolor(COLOR_WHITE);
+        }
         else
-            cprintf("  UNSAFE LOW LOAD: %s\r\n", unsafe_low_load ? "ON" : "OFF");
+        {
+            cprintf("  DEFAULT CIA HZ: %u\r\n", default_cia_hz);
+        }
 
-        cprintf("\r\nCurrent mode:\r\n");
-        cprintf("%s\r\n", get_play_mode_name());
+        if (selected == 3)
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> DEFAULT UNSAFE: %s\r\n",
+                    default_unsafe_low_load ? "ON" : "OFF");
+            textcolor(COLOR_WHITE);
+        }
+        else
+        {
+            cprintf("  DEFAULT UNSAFE: %s\r\n",
+                    default_unsafe_low_load ? "ON" : "OFF");
+        }
 
-        cprintf("\r\nVBI Hz: %u\r\n", custom_vbi_hz);
-        cprintf("CIA Hz: %u\r\n", custom_cia_hz);
-        cprintf("Unsafe: %s\r\n", unsafe_low_load ? "ON" : "OFF");
+        print_cursor_line(selected == 4, "APPLY DEFAULTS TO ALL SONGS");
+        print_cursor_line(selected == 5, "BACK");
 
-        cprintf("\r\nUP/DOWN or W/S\r\n");
-        cprintf("RETURN = select/edit\r\n");
-        cprintf("Q = back\r\n");
+        print_help();
 
         key = menu_key();
 
         if (key == KEY_UP)
         {
             if (selected == 0)
-                selected = 4;
+                selected = 5;
             else
                 selected--;
         }
@@ -325,43 +504,30 @@ void show_options_menu(void)
         {
             selected++;
 
-            if (selected > 4)
+            if (selected > 5)
                 selected = 0;
         }
-        else if (key == KEY_RETURN)
+        else if (key == KEY_RETURN || key == KEY_RIGHT)
         {
             if (selected == 0)
-            {
-                custom_vbi_hz = input_hz("VBI custom speed", custom_vbi_hz);
-                play_mode = PLAYMODE_VBI_CUSTOM;
-            }
+                default_play_mode = next_play_mode(default_play_mode);
             else if (selected == 1)
-            {
-                custom_cia_hz = input_hz("CIA custom speed", custom_cia_hz);
-                play_mode = PLAYMODE_CIA_CUSTOM;
-            }
+                default_vbi_hz = input_hz("default VBI speed", default_vbi_hz);
             else if (selected == 2)
-            {
-                play_mode = PLAYMODE_AUTO;
-            }
+                default_cia_hz = input_hz("default CIA speed", default_cia_hz);
             else if (selected == 3)
-            {
-                play_mode = PLAYMODE_REJECT_CIA;
-            }
+                default_unsafe_low_load = !default_unsafe_low_load;
             else if (selected == 4)
-            {
-                unsafe_low_load = !unsafe_low_load;
-            }
+                apply_defaults_to_all_songs();
+            else if (selected == 5)
+                done = 1;
         }
-        else if (key == 'q' || key == 'Q')
+        else if (is_back_key(key))
         {
             done = 1;
         }
     }
 }
-
-/* -------------------------------------------------- */
-/* Load file to SID_BUFFER */
 
 uint16_t load_file_raw(char *name)
 {
@@ -388,9 +554,6 @@ uint16_t load_file_raw(char *name)
 
     return pos;
 }
-
-/* -------------------------------------------------- */
-/* Parse PSID/RSID header */
 
 uint8_t parse_sid(uint16_t filesize)
 {
@@ -422,6 +585,9 @@ uint8_t parse_sid(uint16_t filesize)
         SID_BUFFER[21];
 
     sid_use_cia = (sid_speed_flags & 1) ? 1 : 0;
+
+    copy_sid_text(22, sid_title);
+    copy_sid_text(54, sid_author);
 
     if (play_mode == PLAYMODE_REJECT_CIA && sid_use_cia)
         return 5;
@@ -462,9 +628,6 @@ uint8_t parse_sid(uint16_t filesize)
 
     return 1;
 }
-
-/* -------------------------------------------------- */
-/* Scan disk directory */
 
 void scan_directory(void)
 {
@@ -519,10 +682,10 @@ void scan_directory(void)
     cbm_close(1);
 }
 
-/* -------------------------------------------------- */
-
 void show_parse_error(uint8_t err)
 {
+    textcolor(COLOR_LIGHTRED);
+
     if (err == 0)
         cprintf("Not valid SID file.\r\n");
     else if (err == 2)
@@ -535,28 +698,12 @@ void show_parse_error(uint8_t err)
         cprintf("CIA timing rejected.\r\n");
     else
         cprintf("Unknown SID error.\r\n");
-}
 
-/* -------------------------------------------------- */
+    textcolor(COLOR_WHITE);
+}
 
 void play_tick_by_hz(uint16_t hz, uint16_t *acc)
 {
-    /*
-       PAL frame = 50 Hz.
-
-       acc += wanted Hz
-       if acc >= 50, call play and subtract 50.
-
-       Examples:
-       10 Hz = 1 call per 5 frames
-       20 Hz = 2 calls per 5 frames
-       30 Hz = 3 calls per 5 frames
-       40 Hz = 4 calls per 5 frames
-       50 Hz = 1 call per frame
-       60 Hz = 6 calls per 5 frames
-       100 Hz = 2 calls per frame
-    */
-
     *acc += hz;
 
     while (*acc >= 50)
@@ -566,10 +713,9 @@ void play_tick_by_hz(uint16_t hz, uint16_t *acc)
     }
 }
 
-/* -------------------------------------------------- */
-
-void play_sid_file(char *name)
+void play_sid_file(uint8_t index)
 {
+    char *name;
     uint16_t size;
     uint16_t frames;
     uint8_t parse_result;
@@ -578,47 +724,54 @@ void play_sid_file(char *name)
     uint16_t acc;
     uint8_t stop;
 
-    clrscr();
-    cprintf("SIDPlay\r\n");
-    cprintf("--------------------\r\n");
+    name = sid_files[index];
+
+    apply_song_settings(index);
+
+    setup_screen();
+
+    print_sidplay_logo("player");
+
     cprintf("Loading: %s\r\n", name);
 
     size = load_file_raw(name);
-
-    cprintf("Size: %u\r\n", size);
-    cprintf("Header: %02x %02x %02x %02x\r\n",
-            SID_BUFFER[0],
-            SID_BUFFER[1],
-            SID_BUFFER[2],
-            SID_BUFFER[3]);
 
     parse_result = parse_sid(size);
 
     if (parse_result != 1)
     {
+        cprintf("Size: %u\r\n", size);
+        cprintf("Header: %02x %02x %02x %02x\r\n",
+                SID_BUFFER[0],
+                SID_BUFFER[1],
+                SID_BUFFER[2],
+                SID_BUFFER[3]);
+
         show_parse_error(parse_result);
-        cprintf("Press key...\r\n");
-        cgetc();
+        cprintf("Q/LEFT = back\r\n");
+        wait_for_back();
         return;
     }
 
-    cprintf("Type: %s\r\n", sid_is_rsid_file ? "RSID" : "PSID");
-    cprintf("Version: %u\r\n", sid_version);
+    cprintf("Title: %s\r\n", sid_title);
+    cprintf("Author: %s\r\n", sid_author);
+    cprintf("File: %s\r\n", name);
     cprintf("Load: $%04x\r\n", sid_load);
     cprintf("Init: $%04x\r\n", sid_init);
     cprintf("Play: $%04x\r\n", sid_play);
     cprintf("Songs: %u\r\n", sid_songs);
     cprintf("Start: %u\r\n", sid_start_song);
-    cprintf("Header speed: %s\r\n", sid_use_cia ? "CIA" : "VBI");
-    cprintf("Play mode: %s\r\n", get_play_mode_name());
+    cprintf("Speed: %s\r\n", sid_use_cia ? "CIA" : "VBI");
+    cprintf("Mode: %s\r\n", get_play_mode_name());
 
     play_hz = get_effective_hz();
 
-    cprintf("Effective Hz: %u\r\n", play_hz);
+    textcolor(COLOR_YELLOW);
+    cprintf("Hz: %u\r\n", play_hz);
+    textcolor(COLOR_WHITE);
 
     cprintf("\r\nPlaying...\r\n");
-    cprintf("SPACE = back to menu\r\n");
-    cprintf("Q = stop\r\n");
+    cprintf("Q/LEFT = back\r\n");
 
     sid_silence();
 
@@ -645,12 +798,9 @@ void play_sid_file(char *name)
 
         if (kbhit())
         {
-            uint8_t key = cgetc();
+            uint8_t key = menu_key();
 
-            if (key == KEY_SPACE)
-                stop = 1;
-
-            if (key == 'q' || key == 'Q')
+            if (is_back_key(key))
                 stop = 1;
         }
     }
@@ -658,7 +808,111 @@ void play_sid_file(char *name)
     sid_silence();
 }
 
-/* -------------------------------------------------- */
+uint8_t song_settings_menu(uint8_t index)
+{
+    uint8_t selected = 0;
+    uint8_t key;
+
+    while (1)
+    {
+        setup_screen();
+
+        print_sidplay_logo("song setup");
+
+        cprintf("Song:\r\n");
+        cprintf("%s\r\n\r\n", sid_files[index]);
+
+        print_cursor_line(selected == 0, "PLAY");
+
+        if (selected == 1)
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> MODE: %s\r\n",
+                    get_play_mode_name_by_value(song_play_mode[index]));
+            textcolor(COLOR_WHITE);
+        }
+        else
+        {
+            cprintf("  MODE: %s\r\n",
+                    get_play_mode_name_by_value(song_play_mode[index]));
+        }
+
+        if (selected == 2)
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> VBI HZ: %u\r\n", song_vbi_hz[index]);
+            textcolor(COLOR_WHITE);
+        }
+        else
+        {
+            cprintf("  VBI HZ: %u\r\n", song_vbi_hz[index]);
+        }
+
+        if (selected == 3)
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> CIA HZ: %u\r\n", song_cia_hz[index]);
+            textcolor(COLOR_WHITE);
+        }
+        else
+        {
+            cprintf("  CIA HZ: %u\r\n", song_cia_hz[index]);
+        }
+
+        if (selected == 4)
+        {
+            textcolor(COLOR_YELLOW);
+            cprintf("> UNSAFE LOW LOAD: %s\r\n",
+                    song_unsafe_low_load[index] ? "ON" : "OFF");
+            textcolor(COLOR_WHITE);
+        }
+        else
+        {
+            cprintf("  UNSAFE LOW LOAD: %s\r\n",
+                    song_unsafe_low_load[index] ? "ON" : "OFF");
+        }
+
+        print_cursor_line(selected == 5, "BACK");
+
+        print_help();
+
+        key = menu_key();
+
+        if (key == KEY_UP)
+        {
+            if (selected == 0)
+                selected = 5;
+            else
+                selected--;
+        }
+        else if (key == KEY_DOWN)
+        {
+            selected++;
+
+            if (selected > 5)
+                selected = 0;
+        }
+        else if (key == KEY_RETURN || key == KEY_RIGHT)
+        {
+            if (selected == 0)
+                return 1;
+            else if (selected == 1)
+                song_play_mode[index] = next_play_mode(song_play_mode[index]);
+            else if (selected == 2)
+                song_vbi_hz[index] = input_hz("song VBI speed", song_vbi_hz[index]);
+            else if (selected == 3)
+                song_cia_hz[index] = input_hz("song CIA speed", song_cia_hz[index]);
+            else if (selected == 4)
+                song_unsafe_low_load[index] = !song_unsafe_low_load[index];
+            else if (selected == 5)
+                return 0;
+        }
+        else if (is_back_key(key))
+        {
+            return 0;
+        }
+    }
+}
 
 uint8_t select_song_menu(void)
 {
@@ -670,10 +924,9 @@ uint8_t select_song_menu(void)
 
     while (1)
     {
-        clrscr();
+        setup_screen();
 
-        cprintf("SIDPlay song select\r\n");
-        cprintf("--------------------\r\n\r\n");
+        print_sidplay_logo("play song");
 
         for (i = 0; i < visible_lines; i++)
         {
@@ -683,15 +936,18 @@ uint8_t select_song_menu(void)
                 break;
 
             if (index == selected)
+            {
+                textcolor(COLOR_YELLOW);
                 cprintf("> %s\r\n", sid_files[index]);
+                textcolor(COLOR_WHITE);
+            }
             else
+            {
                 cprintf("  %s\r\n", sid_files[index]);
+            }
         }
 
-        cprintf("\r\nUP/DOWN or W/S\r\n");
-        cprintf("RETURN = play\r\n");
-        cprintf("O = options\r\n");
-        cprintf("Q = quit\r\n");
+        print_help();
 
         key = menu_key();
 
@@ -704,14 +960,6 @@ uint8_t select_song_menu(void)
 
             if (selected < top)
                 top = selected;
-
-            if (selected >= top + visible_lines)
-            {
-                if (selected >= visible_lines)
-                    top = selected - visible_lines + 1;
-                else
-                    top = 0;
-            }
         }
         else if (key == KEY_DOWN)
         {
@@ -726,75 +974,112 @@ uint8_t select_song_menu(void)
             if (selected < top)
                 top = selected;
         }
-        else if (key == KEY_RETURN)
+        else if (key == KEY_RETURN || key == KEY_RIGHT)
         {
             return selected;
         }
-        else if (key == 'o' || key == 'O')
-        {
-            show_options_menu();
-        }
-        else if (key == 'q' || key == 'Q')
+        else if (is_back_key(key))
         {
             return 255;
         }
     }
 }
 
-/* -------------------------------------------------- */
-
-void main_menu_loop(void)
+void play_song_section(void)
 {
     uint8_t selected;
+    uint8_t should_play;
 
     while (1)
     {
         selected = select_song_menu();
 
         if (selected == 255)
-            break;
+            return;
 
-        play_sid_file(sid_files[selected]);
+        should_play = song_settings_menu(selected);
+
+        if (should_play)
+            play_sid_file(selected);
     }
 }
 
-/* -------------------------------------------------- */
+void main_menu(void)
+{
+    uint8_t selected = 0;
+    uint8_t key;
+    uint8_t done = 0;
+
+    while (!done)
+    {
+        setup_screen();
+
+        print_sidplay_logo("main menu");
+
+        print_cursor_line(selected == 0, "PLAY SONG");
+        print_cursor_line(selected == 1, "SETTINGS");
+        print_cursor_line(selected == 2, "AUTHORS");
+
+        print_main_help();
+
+        key = menu_key();
+
+        if (key == KEY_UP)
+        {
+            if (selected == 0)
+                selected = 2;
+            else
+                selected--;
+        }
+        else if (key == KEY_DOWN)
+        {
+            selected++;
+
+            if (selected > 2)
+                selected = 0;
+        }
+        else if (key == KEY_RETURN || key == KEY_RIGHT)
+        {
+            if (selected == 0)
+                play_song_section();
+            else if (selected == 1)
+                show_global_settings_menu();
+            else if (selected == 2)
+                show_authors();
+        }
+        else if (is_program_exit_key(key))
+        {
+            done = 1;
+        }
+    }
+}
 
 int main(void)
 {
-    uint8_t i;
+    setup_screen();
 
-    clrscr();
-    cprintf("SIDPlay\r\n");
-    cprintf("--------------------\r\n");
+    print_sidplay_logo("boot");
     cprintf("Scanning disk...\r\n");
 
     scan_directory();
 
-    clrscr();
-    cprintf("SIDPlay\r\n");
-    cprintf("--------------------\r\n");
-    cprintf("Found %u SID files\r\n\r\n", sid_count);
+    init_song_settings();
 
     if (sid_count == 0)
     {
+        setup_screen();
+        print_sidplay_logo("disk");
         cprintf("No .SID files found.\r\n");
         cprintf("Returning to BASIC...\r\n");
         return 0;
     }
 
-    for (i = 0; i < sid_count; i++)
-    {
-        cprintf("%u: %s\r\n", i + 1, sid_files[i]);
-    }
+    main_menu();
 
-    cprintf("\r\nPress key...\r\n");
-    cgetc();
-
-    main_menu_loop();
-
-    clrscr();
+    setup_screen();
     sid_silence();
+
+    print_sidplay_logo("exit");
 
     cprintf("SIDPlay finished.\r\n");
     cprintf("Returning to BASIC...\r\n");
